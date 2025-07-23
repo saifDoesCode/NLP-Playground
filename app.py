@@ -48,8 +48,16 @@ def load_spacy_model():
     try:
         return spacy.load("en_core_web_sm")
     except OSError:
-        st.error("spaCy English model not found. Please install it using: python -m spacy download en_core_web_sm")
-        return None
+        st.warning("Downloading spaCy English model... This may take a moment.")
+        try:
+            import subprocess
+            import sys
+            subprocess.check_call([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
+            return spacy.load("en_core_web_sm")
+        except Exception as e:
+            st.error(f"Could not download spaCy model: {e}")
+            st.info("Some features may not work without the spaCy model.")
+            return None
 
 def safe_sent_tokenize(text):
     """Safe sentence tokenization with fallback"""
