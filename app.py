@@ -1,5 +1,4 @@
 import streamlit as st
-import spacy
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -8,6 +7,7 @@ import nltk
 from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk.stem import WordNetLemmatizer
 from nltk.corpus import stopwords
+from nltk.tag import pos_tag
 import re
 from collections import Counter
 import base64
@@ -19,45 +19,30 @@ import PyPDF2
 @st.cache_resource
 def download_nltk_data():
     try:
-        # Try the new punkt_tab first
-        try:
-            nltk.data.find('tokenizers/punkt_tab')
-        except LookupError:
-            try:
-                nltk.download('punkt_tab', quiet=True)
-            except:
-                # Fallback to regular punkt if punkt_tab fails
-                nltk.download('punkt', quiet=True)
+        required_data = [
+            ('punkt_tab', 'tokenizers'),
+            ('punkt', 'tokenizers'), 
+            ('wordnet', 'corpora'),
+            ('averaged_perceptron_tagger', 'taggers'),
+            ('stopwords', 'corpora'),
+            ('omw-1.4', 'corpora')
+        ]
         
-        # Download other required data
-        required_data = ['wordnet', 'averaged_perceptron_tagger', 'stopwords', 'omw-1.4']
-        for data in required_data:
+        for data, category in required_data:
             try:
-                nltk.data.find(f'corpora/{data}' if data in ['wordnet', 'stopwords', 'omw-1.4'] else f'taggers/{data}')
+                if category == 'tokenizers':
+                    nltk.data.find(f'{category}/{data}')
+                else:
+                    nltk.data.find(f'{category}/{data}')
             except LookupError:
-                nltk.download(data, quiet=True)
+                try:
+                    nltk.download(data, quiet=True)
+                except:
+                    pass  # Fail silently
         
         return True
-    except Exception as e:
-        st.error(f"Error downloading NLTK data: {e}")
+    except Exception:
         return False
-
-# Load spaCy model
-@st.cache_resource
-def load_spacy_model():
-    try:
-        return spacy.load("en_core_web_sm")
-    except OSError:
-        st.warning("Downloading spaCy English model... This may take a moment.")
-        try:
-            import subprocess
-            import sys
-            subprocess.check_call([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
-            return spacy.load("en_core_web_sm")
-        except Exception as e:
-            st.error(f"Could not download spaCy model: {e}")
-            st.info("Some features may not work without the spaCy model.")
-            return None
 
 def safe_sent_tokenize(text):
     """Safe sentence tokenization with fallback"""
@@ -76,6 +61,46 @@ def safe_word_tokenize(text):
         # Simple fallback word splitting
         return re.findall(r'\b\w+\b', text)
 
+def safe_pos_tag(tokens):
+    """Safe POS tagging with fallback"""
+    try:
+        return pos_tag(tokens)
+    except:
+        # Simple fallback - assume everything is a noun
+        return [(token, 'NN') for token in tokens]
+
+def extract_entities_simple(text):
+    """Simple named entity extraction using TextBlob and regex"""
+    blob = TextBlob(text)
+    
+    entities = []
+    
+    # Extract proper nouns as potential entities
+    try:
+        pos_tags = blob.tags
+        for word, tag in pos_tags:
+            if tag in ['NNP', 'NNPS']:  # Proper nouns
+                entities.append((word, 'PERSON/ORG'))
+    except:
+        pass
+    
+    # Simple regex patterns for common entities
+    patterns = {
+        'DATE': r'\b(?:\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}|\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b)',
+        'MONEY': r'\$\d+(?:,\d{3})*(?:\.\d{2})?',
+        'PERCENT': r'\d+(?:\.\d+)?%',
+        'TIME': r'\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\b',
+        'EMAIL': r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+        'PHONE': r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'
+    }
+    
+    for entity_type, pattern in patterns.items():
+        matches = re.finditer(pattern, text, re.IGNORECASE)
+        for match in matches:
+            entities.append((match.group(), entity_type))
+    
+    return entities
+
 def main():
     st.set_page_config(
         page_title="NLP Playground",
@@ -84,15 +109,10 @@ def main():
     )
 
     # Download NLTK data
-    if not download_nltk_data():
-        st.warning("Some NLTK features may not work properly.")
-
-    # Load spaCy model
-    nlp = load_spacy_model()
-    if nlp is None:
-        st.stop()
+    download_nltk_data()
 
     st.title("🔤 NLP Playground: Interactive Text Analysis")
+    st.markdown("**Powered by TextBlob & NLTK - No spaCy Required!**")
     st.markdown("---")
 
     # Text input section
@@ -108,7 +128,7 @@ def main():
     if input_method == "Direct Text Input":
         text = st.text_area(
             "Enter your text:",
-            value="Natural Language Processing is a fascinating field that combines linguistics and computer science. It helps computers understand, interpret, and generate human language.",
+            value="Natural Language Processing is a fascinating field that combines linguistics and computer science. It helps computers understand, interpret, and generate human language in meaningful ways.",
             height=150
         )
         
@@ -204,11 +224,10 @@ def main():
 
     st.markdown("---")
 
-    # Named Entity Recognition
+    # Named Entity Recognition (Simple version)
     st.header("🏷️ Named Entity Recognition")
     
-    doc = nlp(text)
-    entities = [(ent.text, ent.label_, ent.start_char, ent.end_char) for ent in doc.ents]
+    entities = extract_entities_simple(text)
     
     if entities:
         # Display text with highlighted entities
@@ -217,18 +236,20 @@ def main():
         
         # Entity colors
         entity_colors = {
-            "PERSON": "#FF6B6B", "ORG": "#4ECDC4", "GPE": "#45B7D1",
-            "DATE": "#96CEB4", "TIME": "#FFEAA7", "MONEY": "#DDA0DD",
-            "PERCENT": "#98D8C8", "CARDINAL": "#F7DC6F", "ORDINAL": "#BB8FCE"
+            "PERSON/ORG": "#FF6B6B", "DATE": "#4ECDC4", "MONEY": "#45B7D1",
+            "PERCENT": "#96CEB4", "TIME": "#FFEAA7", "EMAIL": "#DDA0DD",
+            "PHONE": "#98D8C8"
         }
         
-        # Sort entities by start position (reverse order for replacement)
-        entities_sorted = sorted(entities, key=lambda x: x[2], reverse=True)
-        
-        for ent_text, ent_label, start, end in entities_sorted:
+        # Highlight entities (simple approach)
+        for ent_text, ent_label in entities:
             color = entity_colors.get(ent_label, "#CCCCCC")
-            replacement = f'<mark style="background-color: {color}; padding: 2px 4px; border-radius: 3px;">{ent_text} ({ent_label})</mark>'
-            highlighted_text = highlighted_text[:start] + replacement + highlighted_text[end:]
+            if ent_text in highlighted_text:
+                highlighted_text = highlighted_text.replace(
+                    ent_text, 
+                    f'<mark style="background-color: {color}; padding: 2px 4px; border-radius: 3px;">{ent_text} ({ent_label})</mark>',
+                    1  # Replace only first occurrence
+                )
         
         st.markdown(highlighted_text, unsafe_allow_html=True)
         
@@ -237,20 +258,22 @@ def main():
         
         with col1:
             st.subheader("Entity Details")
-            entity_df = pd.DataFrame(entities, columns=["Text", "Label", "Start", "End"])
-            st.dataframe(entity_df, use_container_width=True)
+            if entities:
+                entity_df = pd.DataFrame(entities, columns=["Text", "Label"])
+                st.dataframe(entity_df, use_container_width=True)
         
         with col2:
             st.subheader("Entity Distribution")
-            entity_counts = Counter([ent[1] for ent in entities])
-            fig = px.pie(
-                values=list(entity_counts.values()),
-                names=list(entity_counts.keys()),
-                title="Entity Types"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if entities:
+                entity_counts = Counter([ent[1] for ent in entities])
+                fig = px.pie(
+                    values=list(entity_counts.values()),
+                    names=list(entity_counts.keys()),
+                    title="Entity Types"
+                )
+                st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No named entities found in the text.")
+        st.info("No entities detected in the text.")
 
     st.markdown("---")
 
@@ -258,122 +281,64 @@ def main():
     st.header("📚 Part-of-Speech Tagging")
     
     # POS tagging results
-    pos_data = []
-    for token in doc:
-        if not token.is_space and token.text.strip():
-            pos_data.append({
-                "Token": token.text,
-                "POS": token.pos_,
-                "Tag": token.tag_,
-                "Lemma": token.lemma_,
-                "Description": spacy.explain(token.pos_) or token.pos_
-            })
-    
-    if pos_data:
-        col1, col2 = st.columns([2, 1])
+    if tokens:
+        pos_tags = safe_pos_tag(tokens[:50])  # Limit to first 50 tokens
         
-        with col1:
-            st.subheader("POS Tags Table")
-            df = pd.DataFrame(pos_data)
-            st.dataframe(df, use_container_width=True)
-        
-        with col2:
-            st.subheader("POS Distribution")
-            pos_counts = Counter([item["POS"] for item in pos_data])
-            fig = px.bar(
-                x=list(pos_counts.keys()),
-                y=list(pos_counts.values()),
-                title="Part-of-Speech Distribution"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # Highlighted text with POS colors
-        st.subheader("Text with POS Highlighting")
-        pos_colors = {
-            "NOUN": "#FF6B6B", "VERB": "#4ECDC4", "ADJ": "#45B7D1",
-            "ADV": "#96CEB4", "PRON": "#FFEAA7", "DET": "#DDA0DD",
-            "ADP": "#98D8C8", "CONJ": "#F7DC6F", "NUM": "#BB8FCE"
-        }
-        
-        highlighted_text = ""
-        for token in doc:
-            if not token.is_space and token.text.strip():
-                color = pos_colors.get(token.pos_, "#CCCCCC")
-                highlighted_text += f'<span style="background-color: {color}; padding: 1px 3px; margin: 1px; border-radius: 2px;" title="{token.pos_}: {spacy.explain(token.pos_) or token.pos_}">{token.text}</span> '
-            else:
-                highlighted_text += " "
-        
-        st.markdown(highlighted_text, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # Dependency Parsing
-    st.header("🌳 Dependency Parsing")
-    
-    # Process first sentence for dependency parsing
-    sentences = list(doc.sents)
-    
-    if sentences:
-        sentence = sentences[0]
-        st.subheader(f"Dependency Tree for: '{sentence.text}'")
-        
-        # Create dependency data
-        dep_data = []
-        for token in sentence:
-            if not token.is_space and token.text.strip():
-                dep_data.append({
-                    "Token": token.text,
-                    "Dependency": token.dep_,
-                    "Head": token.head.text,
-                    "Description": spacy.explain(token.dep_) or token.dep_
+        pos_data = []
+        for token, pos in pos_tags:
+            if token.strip():
+                # Simple POS explanations
+                pos_explanations = {
+                    'NN': 'Noun', 'NNS': 'Plural Noun', 'NNP': 'Proper Noun',
+                    'VB': 'Verb', 'VBD': 'Past Tense Verb', 'VBG': 'Gerund/Present Participle',
+                    'VBN': 'Past Participle', 'VBP': 'Present Verb', 'VBZ': '3rd Person Singular Verb',
+                    'JJ': 'Adjective', 'JJR': 'Comparative Adjective', 'JJS': 'Superlative Adjective',
+                    'RB': 'Adverb', 'RBR': 'Comparative Adverb', 'RBS': 'Superlative Adverb',
+                    'DT': 'Determiner', 'IN': 'Preposition', 'CC': 'Conjunction',
+                    'PRP': 'Pronoun', 'TO': 'To', 'CD': 'Number'
+                }
+                
+                pos_data.append({
+                    "Token": token,
+                    "POS": pos,
+                    "Description": pos_explanations.get(pos, pos)
                 })
         
-        if dep_data:
-            st.subheader("Dependency Relations")
-            df = pd.DataFrame(dep_data)
-            st.dataframe(df, use_container_width=True)
+        if pos_data:
+            col1, col2 = st.columns([2, 1])
             
-            # Simple dependency visualization
-            st.subheader("Dependency Tree Visualization")
+            with col1:
+                st.subheader("POS Tags Table")
+                df = pd.DataFrame(pos_data)
+                st.dataframe(df, use_container_width=True)
             
-            try:
-                # Create a simple bar chart showing dependency types
-                dep_counts = Counter([item["Dependency"] for item in dep_data])
-                
+            with col2:
+                st.subheader("POS Distribution")
+                pos_counts = Counter([item["POS"] for item in pos_data])
                 fig = px.bar(
-                    x=list(dep_counts.keys()),
-                    y=list(dep_counts.values()),
-                    title="Dependency Types in Sentence",
-                    labels={'x': 'Dependency Type', 'y': 'Count'}
+                    x=list(pos_counts.keys()),
+                    y=list(pos_counts.values()),
+                    title="Part-of-Speech Distribution"
                 )
-                fig.update_layout(height=300)
                 st.plotly_chart(fig, use_container_width=True)
-                
-            except Exception as e:
-                # Fallback: Simple text visualization
-                st.write("**Dependency Tree (Text Format):**")
-                
-                # Create a simple text-based dependency tree
-                dep_text = ""
-                for item in dep_data:
-                    dep_text += f"**{item['Token']}** --[{item['Dependency']}]--> **{item['Head']}**\n\n"
-                
-                st.markdown(dep_text)
-                
-                # Show dependency connections as a table
-                st.write("**Dependency Connections:**")
-                connections = []
-                for item in dep_data:
-                    if item['Token'] != item['Head']:
-                        connections.append({
-                            "From": item['Token'],
-                            "Relation": item['Dependency'], 
-                            "To": item['Head']
-                        })
-                
-                if connections:
-                    conn_df = pd.DataFrame(connections)
-                    st.dataframe(conn_df, use_container_width=True)
+            
+            # Highlighted text with POS colors
+            st.subheader("Text with POS Highlighting")
+            pos_colors = {
+                "NN": "#FF6B6B", "NNS": "#FF6B6B", "NNP": "#FF6B6B",
+                "VB": "#4ECDC4", "VBD": "#4ECDC4", "VBG": "#4ECDC4", "VBN": "#4ECDC4", "VBP": "#4ECDC4", "VBZ": "#4ECDC4",
+                "JJ": "#45B7D1", "JJR": "#45B7D1", "JJS": "#45B7D1",
+                "RB": "#96CEB4", "RBR": "#96CEB4", "RBS": "#96CEB4",
+                "DT": "#FFEAA7", "IN": "#DDA0DD", "CC": "#98D8C8"
+            }
+            
+            highlighted_text = ""
+            for token, pos in pos_tags:
+                if token.strip():
+                    color = pos_colors.get(pos, "#CCCCCC")
+                    highlighted_text += f'<span style="background-color: {color}; padding: 1px 3px; margin: 1px; border-radius: 2px;" title="{pos}">{token}</span> '
+            
+            st.markdown(highlighted_text, unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -455,28 +420,29 @@ def main():
         
         sent_data = []
         for i, sentence in enumerate(sentences, 1):
-            # Convert spaCy Span to string
-            sentence_text = sentence.text if hasattr(sentence, 'text') else str(sentence)
-            sent_blob = TextBlob(sentence_text)
-            sent_data.append({
-                "Sentence": i,
-                "Text": sentence_text,
-                "Polarity": sent_blob.sentiment.polarity,
-                "Subjectivity": sent_blob.sentiment.subjectivity
-            })
+            sentence_text = sentence.strip()
+            if sentence_text:
+                sent_blob = TextBlob(sentence_text)
+                sent_data.append({
+                    "Sentence": i,
+                    "Text": sentence_text,
+                    "Polarity": sent_blob.sentiment.polarity,
+                    "Subjectivity": sent_blob.sentiment.subjectivity
+                })
         
-        df = pd.DataFrame(sent_data)
-        st.dataframe(df, use_container_width=True)
-        
-        # Sentiment trend
-        if len(sent_data) > 1:
-            fig = px.line(
-                df, x="Sentence", y="Polarity",
-                title="Sentiment Trend Across Sentences",
-                markers=True
-            )
-            fig.add_hline(y=0, line_dash="dash", line_color="gray")
-            st.plotly_chart(fig, use_container_width=True)
+        if sent_data:
+            df = pd.DataFrame(sent_data)
+            st.dataframe(df, use_container_width=True)
+            
+            # Sentiment trend
+            if len(sent_data) > 1:
+                fig = px.line(
+                    df, x="Sentence", y="Polarity",
+                    title="Sentiment Trend Across Sentences",
+                    markers=True
+                )
+                fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
 
@@ -511,7 +477,8 @@ def main():
                 st.dataframe(freq_df, use_container_width=True)
 
     st.markdown("---")
-    st.markdown("**🔤 NLP Playground** - Built with Streamlit, spaCy, NLTK, and TextBlob")
+    st.markdown("**🔤 NLP Playground** - Built with Streamlit, TextBlob & NLTK")
+    st.markdown("*No spaCy Required!* 🎉")
 
 def extract_text_from_pdf(uploaded_file):
     """Extract text from PDF file"""
